@@ -13,61 +13,18 @@ import argparse
 import csv
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 import cv2
 import mediapipe as mp
 import numpy as np
-from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
-from mediapipe_tasks_delegate import cpu_delegate_name, explain_cpu_fallback, should_try_gpu
-
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_full/float16/latest/pose_landmarker_full.task"
-)
-MODEL_PATH = Path.home() / ".cache" / "mediapipe" / "pose_landmarker_full.task"
+from mediapipe_tasks_delegate import create_pose_landmarker
 
 TOE_LANDMARKS = {
     "left": 31,
     "right": 32,
 }
-
-
-def ensure_model_file() -> Path:
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not MODEL_PATH.exists():
-        print(f"downloading model: {MODEL_URL}")
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    return MODEL_PATH
-
-
-def make_pose_options(delegate: mp_tasks.BaseOptions.Delegate) -> vision.PoseLandmarkerOptions:
-    base_options = mp_tasks.BaseOptions(model_asset_path=str(ensure_model_file()), delegate=delegate)
-    return vision.PoseLandmarkerOptions(
-        base_options=base_options,
-        running_mode=vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-        output_segmentation_masks=False,
-    )
-
-
-def create_pose_landmarker(prefer_gpu: bool = True) -> tuple[vision.PoseLandmarker, str]:
-    explain_cpu_fallback(prefer_gpu)
-    if should_try_gpu(prefer_gpu):
-        try:
-            return vision.PoseLandmarker.create_from_options(
-                make_pose_options(mp_tasks.BaseOptions.Delegate.GPU)
-            ), "GPU"
-        except Exception as exc:
-            print(f"GPU delegate unavailable, falling back to CPU: {exc}")
-    return vision.PoseLandmarker.create_from_options(
-        make_pose_options(mp_tasks.BaseOptions.Delegate.CPU)
-    ), cpu_delegate_name()
 
 
 def detect_toe(
@@ -194,7 +151,7 @@ def run(args: argparse.Namespace) -> int:
         writer = csv.writer(csv_file)
         writer.writerow(["frame", "x", "y", "source"])
 
-    landmarker, delegate = create_pose_landmarker(prefer_gpu=not args.cpu)
+    landmarker, delegate = create_pose_landmarker()
     landmark_index = TOE_LANDMARKS[args.side]
     prev_gray = None
     point = None
@@ -263,7 +220,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--video", help="video file path. If omitted, the camera is used.")
     parser.add_argument("--camera", type=int, default=0, help="camera index when --video is omitted")
     parser.add_argument("--side", choices=sorted(TOE_LANDMARKS), default="left", help="toe landmark to track")
-    parser.add_argument("--cpu", action="store_true", help="force CPU delegate")
+    parser.add_argument("--cpu", action="store_true", help="kept for compatibility; CPU is always used")
     parser.add_argument("--detect-every", type=int, default=15, help="run MediaPipe Pose every N frames")
     parser.add_argument("--crop-size", type=int, default=160, help="tracking crop size around the toe in pixels")
     parser.add_argument("--pose-scale", type=float, default=0.5, help="downscale factor for Pose detection")

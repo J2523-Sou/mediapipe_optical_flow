@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Minimal MediaPipe Tasks hand landmark sample.
 
-The script downloads the hand landmark model on first run, tries the GPU
-delegate first, and falls back to CPU automatically if GPU is unavailable.
+The script downloads the hand landmark model on first run and runs the
+MediaPipe Tasks CPU delegate.
 
 Use:
   python3 mediapipe_gpu_test.py
@@ -18,50 +18,10 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-import urllib.request
-from pathlib import Path
 
 import cv2
 import mediapipe as mp
-from mediapipe.tasks import python as mp_tasks
-from mediapipe.tasks.python import vision
-from mediapipe_tasks_delegate import cpu_delegate_name, explain_cpu_fallback, should_try_gpu
-
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-    "hand_landmarker/float16/1/hand_landmarker.task"
-)
-MODEL_PATH = Path.home() / ".cache" / "mediapipe" / "hand_landmarker.task"
-
-
-def ensure_model_file() -> Path:
-	MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-	if not MODEL_PATH.exists():
-		print(f"downloading model: {MODEL_URL}")
-		urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-	return MODEL_PATH
-
-
-def make_options(delegate: mp_tasks.BaseOptions.Delegate) -> vision.HandLandmarkerOptions:
-	base_options = mp_tasks.BaseOptions(model_asset_path=str(ensure_model_file()), delegate=delegate)
-	return vision.HandLandmarkerOptions(
-		base_options=base_options,
-		running_mode=vision.RunningMode.VIDEO,
-		num_hands=2,
-		min_hand_detection_confidence=0.5,
-		min_hand_presence_confidence=0.5,
-		min_tracking_confidence=0.5,
-	)
-
-
-def create_landmarker(prefer_gpu: bool = True) -> tuple[vision.HandLandmarker, str]:
-	explain_cpu_fallback(prefer_gpu)
-	if should_try_gpu(prefer_gpu):
-		try:
-			return vision.HandLandmarker.create_from_options(make_options(mp_tasks.BaseOptions.Delegate.GPU)), "GPU"
-		except Exception as exc:
-			print(f"GPU delegate unavailable, falling back to CPU: {exc}")
-	return vision.HandLandmarker.create_from_options(make_options(mp_tasks.BaseOptions.Delegate.CPU)), cpu_delegate_name()
+from mediapipe_tasks_delegate import create_hand_landmarker, ensure_hand_model_file
 
 
 HAND_CONNECTIONS = [
@@ -89,12 +49,12 @@ def draw_results(frame, results) -> None:
 					cv2.line(frame, points[start], points[end], (255, 0, 0), 2)
 
 
-def run_camera(prefer_gpu: bool = True) -> None:
+def run_camera() -> None:
 	cap = cv2.VideoCapture(0)
 	if not cap.isOpened():
 		raise SystemExit("カメラを開けませんでした。カメラ許可とデバイス番号を確認してください。")
 
-	landmarker, delegate_name = create_landmarker(prefer_gpu=prefer_gpu)
+	landmarker, delegate_name = create_hand_landmarker()
 	print(f"delegate: {delegate_name}")
 	with landmarker:
 		start_time = time.monotonic()
@@ -115,28 +75,28 @@ def run_camera(prefer_gpu: bool = True) -> None:
 	cv2.destroyAllWindows()
 
 
-def run_check(prefer_gpu: bool = True) -> None:
-	landmarker, delegate_name = create_landmarker(prefer_gpu=prefer_gpu)
+def run_check() -> None:
+	landmarker, delegate_name = create_hand_landmarker()
 	with landmarker:
 		print(f"mediapipe version: {getattr(mp, '__version__', 'unknown')}")
 		print(f"delegate: {delegate_name}")
-		print(f"model: {ensure_model_file()}")
+		print(f"model: {ensure_hand_model_file()}")
 		print("tasks API import and model initialization: OK")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Minimal MediaPipe Tasks hand landmarker sample")
 	parser.add_argument("--check", action="store_true", help="download model and initialize the landmarker only")
-	parser.add_argument("--cpu", action="store_true", help="force CPU delegate")
+	parser.add_argument("--cpu", action="store_true", help="kept for compatibility; CPU is always used")
 	return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
 	args = parse_args(argv)
 	if args.check:
-		run_check(prefer_gpu=not args.cpu)
+		run_check()
 	else:
-		run_camera(prefer_gpu=not args.cpu)
+		run_camera()
 	return 0
 
 

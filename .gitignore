@@ -17,5 +17,8 @@ results/
 # README
 !README.md
 
+# 依存関係
+!requirements.txt
+
 # この ignore ルール自体は Git に上げる。
 !.gitignore

@@ -11,94 +11,23 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import platform
 import sys
-import urllib.request
 from pathlib import Path
 
 import cv2
 import mediapipe as mp
 import numpy as np
-from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+from scipy.signal import savgol_filter
+from mediapipe_tasks_delegate import create_pose_landmarker, ensure_pose_model_file
+from video_utils import make_video_writer, video_timestamp_ms
 
 RESULTS_DIR = Path("results")
 
-# realtime_toe_tracker.py を import せず、このファイル単体で実行できるようにする。
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_full/float16/latest/pose_landmarker_full.task"
-)
-MODEL_PATH = Path.home() / ".cache" / "mediapipe" / "pose_landmarker_full.task"
 TOE_LANDMARKS = {
     "left": 31,
     "right": 32,
 }
-
-
-def is_apple_silicon() -> bool:
-    return platform.system() == "Darwin" and platform.machine() in {"arm64", "aarch64"}
-
-
-def is_macos() -> bool:
-    return platform.system() == "Darwin"
-
-
-def should_try_gpu(prefer_gpu: bool) -> bool:
-    # macOS では GPU delegate 初期化時に native 側で abort する場合があるため、
-    # デフォルトでは CPU を使う。
-    return prefer_gpu and not is_macos()
-
-
-def cpu_delegate_name() -> str:
-    if is_apple_silicon():
-        return "CPU (Apple Silicon)"
-    return "CPU"
-
-
-def explain_cpu_fallback(prefer_gpu: bool) -> None:
-    if prefer_gpu and is_macos():
-        print(
-            "macOS detected: using CPU delegate. "
-            "MediaPipe Tasks GPU delegate can abort the Python process on some macOS environments."
-        )
-
-
-def ensure_model_file() -> Path:
-    # Pose Landmarker モデルは初回だけダウンロードし、以後はキャッシュを使う。
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not MODEL_PATH.exists():
-        print(f"downloading model: {MODEL_URL}")
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    return MODEL_PATH
-
-
-def make_pose_options(delegate: mp_tasks.BaseOptions.Delegate) -> vision.PoseLandmarkerOptions:
-    base_options = mp_tasks.BaseOptions(model_asset_path=str(ensure_model_file()), delegate=delegate)
-    return vision.PoseLandmarkerOptions(
-        base_options=base_options,
-        running_mode=vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-        output_segmentation_masks=False,
-    )
-
-
-def create_pose_landmarker(prefer_gpu: bool = True) -> tuple[vision.PoseLandmarker, str]:
-    # GPU が安定して使える環境だけ GPU を試し、それ以外は CPU を使う。
-    explain_cpu_fallback(prefer_gpu)
-    if should_try_gpu(prefer_gpu):
-        try:
-            return vision.PoseLandmarker.create_from_options(
-                make_pose_options(mp_tasks.BaseOptions.Delegate.GPU)
-            ), "GPU"
-        except Exception as exc:
-            print(f"GPU delegate unavailable, falling back to CPU: {exc}")
-    return vision.PoseLandmarker.create_from_options(
-        make_pose_options(mp_tasks.BaseOptions.Delegate.CPU)
-    ), cpu_delegate_name()
 
 
 def detect_toe(
@@ -107,7 +36,7 @@ def detect_toe(
     timestamp_ms: int,
     landmark_index: int,
     pose_scale: float,
-    ) -> tuple[float, float] | None:
+) -> tuple[float, float] | None:
     # Pose は更新フレームだけ実行する。返ってくる正規化座標は、
     # 元動画の座標系に戻して返す。
     height, width = frame.shape[:2]
@@ -237,24 +166,66 @@ def output_paths(video_path: str, out_dir: Path, write_video: bool) -> tuple[Pat
     return csv_path, out_dir / f"{base}_toe_flow.mp4"
 
 
-def make_writer(cap: cv2.VideoCapture, output_path: Path) -> cv2.VideoWriter:
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if not fps or fps <= 0:
-        fps = 30.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-    if not writer.isOpened():
-        raise SystemExit(f"出力動画を作成できませんでした: {output_path}")
-    return writer
+def apply_savgol(
+    points: list[tuple[float, float] | None],
+    window_length: int,
+    polyorder: int,
+) -> list[tuple[float, float] | None]:
+    """欠損を除いた有効座標列に Savitzky-Golay フィルタを適用する。"""
+    filtered: list[tuple[float, float] | None] = [None] * len(points)
+    valid_indices = [index for index, point in enumerate(points) if point is not None]
+    if not valid_indices:
+        return filtered
+
+    valid_points = np.asarray([points[index] for index in valid_indices], dtype=np.float64)
+    effective_window = min(window_length, len(valid_points))
+    if effective_window % 2 == 0:
+        effective_window -= 1
+
+    if effective_window > polyorder:
+        valid_points = savgol_filter(
+            valid_points,
+            window_length=effective_window,
+            polyorder=polyorder,
+            axis=0,
+        )
+
+    for index, point in zip(valid_indices, valid_points):
+        filtered[index] = float(point[0]), float(point[1])
+
+    return filtered
 
 
-def video_timestamp_ms(cap: cv2.VideoCapture, frame_idx: int) -> int:
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps and fps > 0:
-        return int((frame_idx / fps) * 1000)
-    return frame_idx * 33
+def write_results_csv(
+    csv_path: Path,
+    rows: list[tuple[int, tuple[float, float] | None, str, tuple[int, int, int, int] | None]],
+    window_length: int,
+    polyorder: int,
+) -> None:
+    filtered_points = apply_savgol([row[1] for row in rows], window_length, polyorder)
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "frame",
+            "x",
+            "y",
+            "x_savgol",
+            "y_savgol",
+            "source",
+            "crop_x1",
+            "crop_y1",
+            "crop_x2",
+            "crop_y2",
+        ])
+        for (frame_idx, point, source, bounds), filtered_point in zip(rows, filtered_points):
+            raw_values = ["", ""] if point is None else [f"{point[0]:.6f}", f"{point[1]:.6f}"]
+            filtered_values = (
+                ["", ""]
+                if filtered_point is None
+                else [f"{filtered_point[0]:.6f}", f"{filtered_point[1]:.6f}"]
+            )
+            crop_values = ["", "", "", ""] if bounds is None else list(bounds)
+            writer.writerow([frame_idx, *raw_values, *filtered_values, source, *crop_values])
 
 
 def process_video(args: argparse.Namespace, video_path: str, landmarker, delegate: str) -> None:
@@ -264,86 +235,75 @@ def process_video(args: argparse.Namespace, video_path: str, landmarker, delegat
         return
 
     csv_path, annotated_path = output_paths(video_path, args.out_dir, args.write_video)
-    video_writer = make_writer(cap, annotated_path) if annotated_path is not None else None
+    video_writer = make_video_writer(cap, annotated_path) if annotated_path is not None else None
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     landmark_index = TOE_LANDMARKS[args.side]
     prev_gray = None
     point = None
     source = "none"
     frame_idx = 0
+    rows = []
 
     print(f"Processing: {video_path}")
     print(f"  csv: {csv_path}")
+    print(f"  Savitzky-Golay: window={args.savgol_window}, polyorder={args.savgol_polyorder}")
     if annotated_path is not None:
         print(f"  annotated video: {annotated_path}")
 
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["frame", "x", "y", "source", "crop_x1", "crop_y1", "crop_x2", "crop_y2"])
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        timestamp_ms = video_timestamp_ms(cap, frame_idx)
+        # 追跡点がない場合、または指定間隔に達した場合は MediaPipe で再検出する。
+        # それ以外の中間フレームは optical flow で追跡する。
+        needs_pose = point is None or frame_idx % args.detect_every == 0
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            timestamp_ms = video_timestamp_ms(cap, frame_idx)
-            # 追跡点がない場合、または指定間隔に達した場合は MediaPipe で再検出する。
-            # それ以外の中間フレームは optical flow で追跡する。
-            needs_pose = point is None or frame_idx % args.detect_every == 0
-
-            if not needs_pose and prev_gray is not None:
-                tracked = track_toe(prev_gray, gray, point, args.crop_size)
-                if tracked is not None:
-                    point = tracked
-                    source = "flow"
-                else:
-                    # optical flow が点を見失った場合は、同じフレームで Pose に戻して復帰する。
-                    needs_pose = True
-
-            if needs_pose:
-                detected = detect_toe(
-                    landmarker,
-                    frame,
-                    timestamp_ms,
-                    landmark_index,
-                    args.pose_scale,
-                )
-                if detected is not None:
-                    point = detected
-                    source = "pose"
-                else:
-                    point = None
-                    source = "none"
-
-            if point is None:
-                writer.writerow([frame_idx, "", "", source, "", "", "", ""])
+        if not needs_pose and prev_gray is not None:
+            tracked = track_toe(prev_gray, gray, point, args.crop_size)
+            if tracked is not None:
+                point = tracked
+                source = "flow"
             else:
-                x1, y1, x2, y2 = crop_bounds(point, frame.shape[1], frame.shape[0], args.crop_size)
-                writer.writerow([
-                    frame_idx,
-                    f"{point[0]:.6f}",
-                    f"{point[1]:.6f}",
-                    source,
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                ])
+                # optical flow が点を見失った場合は、同じフレームで Pose に戻して復帰する。
+                needs_pose = True
 
-            if video_writer is not None:
-                draw_overlay(frame, point, args.crop_size, delegate, source)
-                video_writer.write(frame)
+        if needs_pose:
+            detected = detect_toe(
+                landmarker,
+                frame,
+                timestamp_ms,
+                landmark_index,
+                args.pose_scale,
+            )
+            if detected is not None:
+                point = detected
+                source = "pose"
+            else:
+                point = None
+                source = "none"
 
-            if frame_idx % args.progress_every == 0:
-                print(f"  frame {frame_idx}/{total_frames} source={source}")
+        bounds = None
+        if point is not None:
+            bounds = crop_bounds(point, frame.shape[1], frame.shape[0], args.crop_size)
+        rows.append((frame_idx, point, source, bounds))
 
-            prev_gray = gray
-            frame_idx += 1
+        if video_writer is not None:
+            draw_overlay(frame, point, args.crop_size, delegate, source)
+            video_writer.write(frame)
+
+        if frame_idx % args.progress_every == 0:
+            print(f"  frame {frame_idx}/{total_frames} source={source}")
+
+        prev_gray = gray
+        frame_idx += 1
 
     cap.release()
     if video_writer is not None:
         video_writer.release()
+    write_results_csv(csv_path, rows, args.savgol_window, args.savgol_polyorder)
     print(f"  done: {frame_idx} frames")
 
 
@@ -356,13 +316,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="video file path to process. Repeat for multiple files. If omitted, a file picker opens.",
     )
     parser.add_argument("--side", choices=sorted(TOE_LANDMARKS), default="left", help="toe landmark to track")
-    parser.add_argument("--cpu", action="store_true", help="force CPU delegate")
+    parser.add_argument("--cpu", action="store_true", help="kept for compatibility; CPU is always used")
     parser.add_argument("--detect-every", type=int, default=15, help="run pose detection every N frames")
     parser.add_argument("--crop-size", type=int, default=160, help="optical-flow crop size around the toe")
     parser.add_argument("--pose-scale", type=float, default=0.5, help="downscale factor for pose refresh")
     parser.add_argument("--out-dir", type=Path, default=RESULTS_DIR, help="output directory")
     parser.add_argument("--write-video", action="store_true", help="write an annotated MP4 alongside the CSV")
     parser.add_argument("--progress-every", type=int, default=30, help="print progress every N frames")
+    parser.add_argument("--savgol-window", type=int, default=11, help="Savitzky-Golay window length")
+    parser.add_argument("--savgol-polyorder", type=int, default=2, help="Savitzky-Golay polynomial order")
     args = parser.parse_args(argv)
 
     if args.detect_every < 1:
@@ -373,6 +335,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--pose-scale must be between 0.1 and 1.0")
     if args.progress_every < 1:
         parser.error("--progress-every must be >= 1")
+    if args.savgol_window < 3 or args.savgol_window % 2 == 0:
+        parser.error("--savgol-window must be an odd integer >= 3")
+    if args.savgol_polyorder < 0 or args.savgol_polyorder >= args.savgol_window - 1:
+        parser.error(
+            "--savgol-polyorder must be >= 0 and at least 2 less than --savgol-window; "
+            "polyorder = window - 1 reproduces the input without smoothing"
+        )
     return args
 
 
@@ -381,9 +350,10 @@ def main(argv: list[str]) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.check:
-        landmarker, delegate = create_pose_landmarker(prefer_gpu=not args.cpu)
+        landmarker, delegate = create_pose_landmarker()
         with landmarker:
             print(f"delegate: {delegate}")
+            print(f"model: {ensure_pose_model_file()}")
             print("flow_video MediaPipe Tasks initialization: OK")
         return 0
 
@@ -392,7 +362,7 @@ def main(argv: list[str]) -> int:
         print("No files selected. 終了します。")
         return 0
 
-    landmarker, delegate = create_pose_landmarker(prefer_gpu=not args.cpu)
+    landmarker, delegate = create_pose_landmarker()
     with landmarker:
         print(f"delegate: {delegate}")
         for video_path in videos:

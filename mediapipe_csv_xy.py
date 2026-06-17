@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Export CSV files with the left foot landmark x/y from videos.
 
-This version uses MediaPipe Tasks (0.10.35) with the Pose Landmarker and
-tries the GPU delegate first. The input video is decoded with OpenCV, converted
-to SRGBA, and passed to the Tasks API in VIDEO mode.
+This version uses MediaPipe Tasks (0.10.35) with the Pose Landmarker CPU
+delegate. The input video is decoded with OpenCV, converted to SRGBA, and
+passed to the Tasks API in VIDEO mode.
 """
 
 from __future__ import annotations
@@ -12,79 +12,18 @@ import argparse
 import csv
 import os
 import sys
-import time
-import urllib.request
 from pathlib import Path
 
 import cv2
 import mediapipe as mp
-from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
-from mediapipe_tasks_delegate import cpu_delegate_name, explain_cpu_fallback, should_try_gpu
+from mediapipe_tasks_delegate import create_pose_landmarker, ensure_pose_model_file
+from video_utils import video_timestamp_ms
 
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-	"pose_landmarker_full/float16/latest/pose_landmarker_full.task"
-)
-MODEL_PATH = Path.home() / ".cache" / "mediapipe" / "pose_landmarker_full.task"
 RESULTS_DIR = Path("results")
 
-# PoseLandmarker の結果から「左足首」の座標だけを取り出して CSV に出す。
+# PoseLandmarker の結果から「左足先」の座標だけを取り出して CSV に出す。
 LEFT_FOOT_INDEX = 31
-
-
-def ensure_model_file() -> Path:
-	# モデルは毎回ダウンロードしない。初回だけ取得してキャッシュする。
-	MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-	if not MODEL_PATH.exists():
-		print(f"downloading model: {MODEL_URL}")
-		urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-	return MODEL_PATH
-
-
-def make_pose_options(delegate: mp_tasks.BaseOptions.Delegate) -> vision.PoseLandmarkerOptions:
-	# Tasks API の設定本体。
-	# model_asset_path でモデルを指定し、delegate で CPU/GPU を切り替える。
-	base_options = mp_tasks.BaseOptions(model_asset_path=str(ensure_model_file()), delegate=delegate)
-	return vision.PoseLandmarkerOptions(
-		base_options=base_options,
-		running_mode=vision.RunningMode.VIDEO,
-		# 動画ごとに1人だけを追跡したいので 1 にする。
-		num_poses=1,
-		# 検出のしきい値。低いほど拾いやすく、高いほど厳しくなる。
-		min_pose_detection_confidence=0.5,
-		# ランドマークが「本当に存在する」とみなすしきい値。
-		min_pose_presence_confidence=0.5,
-		# フレーム間追跡のしきい値。低いと追跡しやすいが誤追跡も増えやすい。
-		min_tracking_confidence=0.5,
-		# このスクリプトではマスクは使わない。
-		output_segmentation_masks=False,
-	)
-
-
-def create_pose_landmarker(prefer_gpu: bool = True) -> tuple[vision.PoseLandmarker, str]:
-	# まず GPU を試し、だめなら CPU にフォールバックする。
-	explain_cpu_fallback(prefer_gpu)
-	if should_try_gpu(prefer_gpu):
-		try:
-			return vision.PoseLandmarker.create_from_options(
-				make_pose_options(mp_tasks.BaseOptions.Delegate.GPU)
-			), "GPU"
-		except Exception as exc:
-			print(f"GPU delegate unavailable, falling back to CPU: {exc}")
-	# GPU が使えない環境や --cpu 指定時はこちら。
-	return vision.PoseLandmarker.create_from_options(
-		make_pose_options(mp_tasks.BaseOptions.Delegate.CPU)
-	), cpu_delegate_name()
-
-
-def get_video_timestamp_ms(cap: cv2.VideoCapture, frame_index: int) -> int:
-	# VIDEO モードではフレームのタイムスタンプが必要。
-	# FPS が取れるなら frame_index / fps から算出し、取れなければ仮の 33ms 刻みにする。
-	fps = cap.get(cv2.CAP_PROP_FPS)
-	if fps and fps > 0:
-		return int((frame_index / fps) * 1000)
-	return frame_index * 33
 
 
 def extract_left_foot_xy(result: vision.PoseLandmarkerResult, width: float, height: float):
@@ -98,7 +37,7 @@ def extract_left_foot_xy(result: vision.PoseLandmarkerResult, width: float, heig
 
 
 def process_video(video_path: str, landmarker: vision.PoseLandmarker, delegate: str) -> None:
-	# 1 本の動画を読み、各フレームの左足首座標を CSV に書き出す。
+	# 1 本の動画を読み、各フレームの左足先座標を CSV に書き出す。
 	print(f"Processing: {video_path}")
 	cap = cv2.VideoCapture(video_path)
 	if not cap.isOpened():
@@ -126,7 +65,7 @@ def process_video(video_path: str, landmarker: vision.PoseLandmarker, delegate: 
 			frame_rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
 			# Tasks API は mp.Image を受け取るのでここで包む。
 			mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=frame_rgba)
-			timestamp_ms = get_video_timestamp_ms(cap, frame_idx)
+			timestamp_ms = video_timestamp_ms(cap, frame_idx)
 			# VIDEO モードの推論実行。
 			result = landmarker.detect_for_video(mp_image, timestamp_ms)
 			landmark_xy = extract_left_foot_xy(result, width, height)
@@ -181,10 +120,10 @@ def select_videos() -> list[str]:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-	# --cpu を付けると GPU を使わずに動かせる。
+	# --cpu は古い実行コマンドとの互換用。現在は常に CPU delegate を使う。
 	# --video は GUI を使わずにコマンドラインで直接動画を渡したいとき用。
 	parser = argparse.ArgumentParser(description="Export LEFT_FOOT_INDEX x/y from videos to CSV")
-	parser.add_argument("--cpu", action="store_true", help="force CPU delegate instead of GPU")
+	parser.add_argument("--cpu", action="store_true", help="kept for compatibility; CPU is always used")
 	parser.add_argument(
 		"--video",
 		action="append",
@@ -203,11 +142,11 @@ def main(argv: list[str]) -> int:
 		return 0
 
 	# 1 回初期化した landmarker を全動画で使い回す。
-	landmarker, delegate = create_pose_landmarker(prefer_gpu=not args.cpu)
+	landmarker, delegate = create_pose_landmarker()
 	with landmarker:
 		print(f"mediapipe version: {getattr(mp, '__version__', 'unknown')}")
 		print(f"delegate: {delegate}")
-		print(f"model: {ensure_model_file()}")
+		print(f"model: {ensure_pose_model_file()}")
 		# 選択された動画を順番に処理して CSV を作る。
 		for video_path in videos:
 			process_video(video_path, landmarker=landmarker, delegate=delegate)
