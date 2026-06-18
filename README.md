@@ -1,6 +1,6 @@
 # MediaPipe Tasks CPU サンプル
 
-`mediapipe.tasks` と OpenCV を使って、手・足先・足部特徴点の検出、追跡、座標CSV化、角速度計算、注釈動画作成を行うスクリプト群です。モデルは初回実行時に自動でダウンロードされます。
+`mediapipe.tasks` と OpenCV を使って、足先・足部特徴点の検出、追跡、座標CSV化、角速度計算、注釈動画作成を行うスクリプト群です。モデルは初回実行時に自動でダウンロードされます。
 
 前提:
 - macOS
@@ -14,8 +14,7 @@
 
 | ファイル | 概要 |
 | --- | --- |
-| `hand_demo.py` | MediaPipe Tasks の Hand Landmarker をカメラで動かす最小サンプルです。`--check` ではモデルのダウンロードと初期化だけを確認します。 |
-| `toe_csv.py` | 動画から左足先ランドマークの `x`, `y` 座標をフレームごとに抽出し、`results/<動画名>.csv` へ保存します。動画は GUI または `--video` で選択できます。 |
+| `toe_mp.py` | 動画の全フレームを MediaPipe Pose で処理し、左足先ランドマークの `x`, `y` 座標を `results/<動画名>_toe_mp.csv` へ保存します。`toe_flow.py` との比較用の基準データに使えます。 |
 | `toe_live.py` | カメラまたは動画上で左右どちらかのつま先をリアルタイム追跡します。MediaPipe Pose は一定間隔だけ実行し、間のフレームは小さいクロップ内のオプティカルフローで追跡します。 |
 | `toe_flow.py` | 動画ファイルを対象に、つま先座標を MediaPipe Pose と Lucas-Kanade オプティカルフローで追跡します。生座標と Savitzky-Golay フィルター後座標を CSV に出力し、必要なら注釈付き MP4 も作成します。 |
 | `trajectory_angle.py` | `frame`, `x`, `y` 系の座標 CSV から、軌跡の進行方向角と角速度を計算して新しい CSV を作成します。`--fps` を指定すると秒単位の角速度も出力します。 |
@@ -26,7 +25,7 @@
 
 | ファイル | 概要 |
 | --- | --- |
-| `mediapipe_helper.py` | MediaPipe Tasks の CPU delegate 設定、Hand/Pose モデルのキャッシュ、Landmarker 初期化をまとめた共通ヘルパーです。 |
+| `mediapipe_helper.py` | MediaPipe Tasks の CPU delegate 設定、Pose モデルのキャッシュ、Pose Landmarker 初期化をまとめた共通ヘルパーです。 |
 | `video_io.py` | OpenCV の MP4 writer 作成と、動画 FPS に基づく MediaPipe 用タイムスタンプ計算を提供する小さな共通ヘルパーです。 |
 
 セットアップ:
@@ -38,25 +37,14 @@ python -m pip install -U pip
 python -m pip install -r requirements.txt
 ```
 
-動作確認だけしたい場合:
+全フレームを MediaPipe Pose で処理してCSVを出力する場合:
 
 ```bash
-python3 hand_demo.py --check
+python3 toe_mp.py
 ```
 
-カメラで実行する場合:
-
-```bash
-python3 hand_demo.py
-```
-
-CSV 出力スクリプトは `tkinter` のファイル選択ダイアログを使います。
-
-```bash
-python3 toe_csv.py
-```
-
-`--video /path/to/video.mov` でも指定できます。
+引数を省略すると `tkinter` のファイル選択ダイアログを使います。
+`--video /path/to/video.mov` でも指定できます。出力先は `results/<動画名>_toe_mp.csv` です。
 
 つま先だけをリアルタイム追跡したい場合:
 
@@ -77,6 +65,8 @@ python3 toe_live.py --video /path/to/video.mov --side left
 ```bash
 python3 toe_flow.py --video /path/to/video.mov --side left
 ```
+
+`toe_mp.py` は全フレームを MediaPipe Pose で検出します。`toe_flow.py` は MediaPipe Pose を一定間隔だけ実行し、その間をオプティカルフローで追跡します。
 
 出力CSVにはフィルタ前の座標 `x`, `y` と、Savitzky-Golayフィルタ後の座標
 `x_savgol`, `y_savgol` が格納されます。既定値は窓幅11、多項式次数2です。
@@ -154,7 +144,7 @@ python3 toe_flow.py --check
 ```
 
 補足:
-- 初回は `hand_landmarker.task` と `pose_landmarker_full.task` を `~/.cache/mediapipe/` に保存します。
+- 初回は `pose_landmarker_full.task` を `~/.cache/mediapipe/` に保存します。
 - `--cpu` は古い実行コマンドとの互換用です。現在は指定しなくても常に CPU delegate を使います。
 - Apple Silicon では `delegate=CPU (Apple Silicon)` と表示されます。
 - カメラの取り込みと OpenCV の表示はこの最小構成では CPU です。

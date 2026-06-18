@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Export CSV files with the left foot landmark x/y from videos.
+"""Export toe x/y CSV files using MediaPipe Pose on every video frame.
 
 This version uses MediaPipe Tasks (0.10.35) with the Pose Landmarker CPU
-delegate. The input video is decoded with OpenCV, converted to SRGBA, and
-passed to the Tasks API in VIDEO mode.
+delegate. Every input frame is decoded with OpenCV, converted to SRGBA, and
+passed to the Tasks API in VIDEO mode without optical-flow tracking.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def extract_left_foot_xy(result: vision.PoseLandmarkerResult, width: float, heig
 
 
 def process_video(video_path: str, landmarker: vision.PoseLandmarker, delegate: str) -> None:
-	# 1 本の動画を読み、各フレームの左足先座標を CSV に書き出す。
+	# 1 本の動画を読み、全フレームを MediaPipe Pose で処理して左足先座標を CSV に書き出す。
 	print(f"Processing: {video_path}")
 	cap = cv2.VideoCapture(video_path)
 	if not cap.isOpened():
@@ -48,7 +48,7 @@ def process_video(video_path: str, landmarker: vision.PoseLandmarker, delegate: 
 	height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 	total_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 	base = os.path.splitext(os.path.basename(video_path))[0]
-	csv_path = RESULTS_DIR / f"{base}.csv"
+	csv_path = RESULTS_DIR / f"{base}_toe_mp.csv"
 
 	with csv_path.open("w", newline="", encoding="utf-8") as f:
 		# CSV は frame / x / y の3列だけにする。
@@ -87,7 +87,7 @@ def process_video(video_path: str, landmarker: vision.PoseLandmarker, delegate: 
 			# フレーム番号と座標を1行ずつ書く。
 			writer.writerow([frame_idx, x_value, y_value])
 			print(
-				f"now : {frame_idx} / {total_frame} / {x_value} / {y_value} / delegate={delegate} / file {base}.csv"
+				f"now : {frame_idx} / {total_frame} / {x_value} / {y_value} / delegate={delegate} / file {csv_path.name}"
 			)
 
 			frame_idx += 1
@@ -122,7 +122,9 @@ def select_videos() -> list[str]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
 	# --cpu は古い実行コマンドとの互換用。現在は常に CPU delegate を使う。
 	# --video は GUI を使わずにコマンドラインで直接動画を渡したいとき用。
-	parser = argparse.ArgumentParser(description="Export LEFT_FOOT_INDEX x/y from videos to CSV")
+	parser = argparse.ArgumentParser(
+		description="Export toe x/y from videos using MediaPipe Pose on every frame"
+	)
 	parser.add_argument("--cpu", action="store_true", help="kept for compatibility; CPU is always used")
 	parser.add_argument(
 		"--video",
