@@ -17,8 +17,8 @@ from pathlib import Path
 import cv2
 import mediapipe as mp
 from mediapipe.tasks.python import vision
-from mediapipe_tasks_delegate import create_pose_landmarker, ensure_pose_model_file
-from video_utils import video_timestamp_ms
+from mediapipe_helper import create_pose_landmarker, ensure_pose_model_file
+from video_io import video_timestamp_ms
 
 RESULTS_DIR = Path("results")
 

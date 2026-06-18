@@ -14,9 +14,9 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import vision
 
-from mediapipe_tasks_delegate import create_pose_landmarker
-from render_filtered_coordinates_video import angular_speed_color, select_bb_center_from_frame
-from video_utils import make_video_writer, video_timestamp_ms
+from mediapipe_helper import create_pose_landmarker
+from overlay_video import angular_speed_color, select_bb_center_from_frame
+from video_io import make_video_writer, video_timestamp_ms
 
 
 FOOT_LANDMARKS = {

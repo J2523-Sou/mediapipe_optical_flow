@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from video_utils import make_video_writer
+from video_io import make_video_writer
 
 
 Point = tuple[float, float] | None

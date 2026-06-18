@@ -8,6 +8,27 @@
 - Python 3.11 系（現在の `.venv` は Python 3.11.15）
 - カメラを使う場合は macOS のカメラ許可
 
+プログラム概要:
+
+主に実行するスクリプト:
+
+| ファイル | 概要 |
+| --- | --- |
+| `hand_demo.py` | MediaPipe Tasks の Hand Landmarker をカメラで動かす最小サンプルです。`--check` ではモデルのダウンロードと初期化だけを確認します。 |
+| `toe_csv.py` | 動画から左足先ランドマークの `x`, `y` 座標をフレームごとに抽出し、`results/<動画名>.csv` へ保存します。動画は GUI または `--video` で選択できます。 |
+| `toe_live.py` | カメラまたは動画上で左右どちらかのつま先をリアルタイム追跡します。MediaPipe Pose は一定間隔だけ実行し、間のフレームは小さいクロップ内のオプティカルフローで追跡します。 |
+| `toe_flow.py` | 動画ファイルを対象に、つま先座標を MediaPipe Pose と Lucas-Kanade オプティカルフローで追跡します。生座標と Savitzky-Golay フィルター後座標を CSV に出力し、必要なら注釈付き MP4 も作成します。 |
+| `trajectory_angle.py` | `frame`, `x`, `y` 系の座標 CSV から、軌跡の進行方向角と角速度を計算して新しい CSV を作成します。`--fps` を指定すると秒単位の角速度も出力します。 |
+| `overlay_video.py` | フィルター後座標 CSV を元動画へ重ね、BB 中心まわりの角速度に応じて軌跡の色を変えた MP4 を書き出します。元動画・CSV・BB 中心は GUI または引数で指定できます。 |
+| `foot_flow.py` | 足首・踵・つま先から作った足部 ROI 内の複数特徴点を疎なオプティカルフローで追跡し、BB 中心まわりの角速度中央値を `deg/frame`, `deg/s`, `rpm` として出力します。 |
+
+共通モジュール:
+
+| ファイル | 概要 |
+| --- | --- |
+| `mediapipe_helper.py` | MediaPipe Tasks の CPU delegate 設定、Hand/Pose モデルのキャッシュ、Landmarker 初期化をまとめた共通ヘルパーです。 |
+| `video_io.py` | OpenCV の MP4 writer 作成と、動画 FPS に基づく MediaPipe 用タイムスタンプ計算を提供する小さな共通ヘルパーです。 |
+
 セットアップ:
 
 ```bash
@@ -20,19 +41,19 @@ python -m pip install -r requirements.txt
 動作確認だけしたい場合:
 
 ```bash
-python3 mediapipe_gpu_test.py --check
+python3 hand_demo.py --check
 ```
 
 カメラで実行する場合:
 
 ```bash
-python3 mediapipe_gpu_test.py
+python3 hand_demo.py
 ```
 
 CSV 出力スクリプトは `tkinter` のファイル選択ダイアログを使います。
 
 ```bash
-python3 mediapipe_csv_xy.py
+python3 toe_csv.py
 ```
 
 `--video /path/to/video.mov` でも指定できます。
@@ -40,21 +61,21 @@ python3 mediapipe_csv_xy.py
 つま先だけをリアルタイム追跡したい場合:
 
 ```bash
-python3 realtime_toe_tracker.py
+python3 toe_live.py
 ```
 
 動画ファイルで試す場合:
 
 ```bash
-python3 realtime_toe_tracker.py --video /path/to/video.mov --side left
+python3 toe_live.py --video /path/to/video.mov --side left
 ```
 
-`realtime_toe_tracker.py` は MediaPipe Pose を毎フレーム実行せず、一定間隔だけ全身検出して、その間はつま先周辺の小さいクロップを OpenCV のオプティカルフローで追跡します。`--detect-every` を大きくすると MediaPipe の実行回数が減り、`--crop-size` で追跡範囲を調整できます。
+`toe_live.py` は MediaPipe Pose を毎フレーム実行せず、一定間隔だけ全身検出して、その間はつま先周辺の小さいクロップを OpenCV のオプティカルフローで追跡します。`--detect-every` を大きくすると MediaPipe の実行回数が減り、`--crop-size` で追跡範囲を調整できます。
 
-`openpose_flow_video.py` で動画処理する場合:
+`toe_flow.py` で動画処理する場合:
 
 ```bash
-python3 openpose_flow_video.py --video /path/to/video.mov --side left
+python3 toe_flow.py --video /path/to/video.mov --side left
 ```
 
 出力CSVにはフィルタ前の座標 `x`, `y` と、Savitzky-Golayフィルタ後の座標
@@ -67,9 +88,9 @@ python3 openpose_flow_video.py --video /path/to/video.mov --side left
 1点の座標軌跡から、進行方向角とその角速度を計算する場合:
 
 ```bash
-python3 trajectory_angular_velocity.py results/savitky-goley.csv
-python3 trajectory_angular_velocity.py results/savitky-goley.csv --fps 30
-python3 trajectory_angular_velocity.py results/savitky-goley.csv --omega-savgol-window 15
+python3 trajectory_angle.py results/savitky-goley.csv
+python3 trajectory_angle.py results/savitky-goley.csv --fps 30
+python3 trajectory_angle.py results/savitky-goley.csv --omega-savgol-window 15
 ```
 
 角速度は軌跡の速度ベクトルが回転する速さです。画像Y軸を反転した直交座標系で、
@@ -81,14 +102,14 @@ python3 trajectory_angular_velocity.py results/savitky-goley.csv --omega-savgol-
 フィルター後座標を元動画へ重ねてMP4を書き出す場合:
 
 ```bash
-python3 render_filtered_coordinates_video.py
+python3 overlay_video.py
 ```
 
 引数を省略すると、元動画・CSV・表示する窓幅・出力先をGUIで選択できます。
 コマンドラインで指定する場合:
 
 ```bash
-python3 render_filtered_coordinates_video.py \
+python3 overlay_video.py \
   --video /path/to/IMG_2017.mov \
   --csv results/IMG_2017_toe_flow.csv \
   --bb-frame 0 \
@@ -112,7 +133,7 @@ python3 render_filtered_coordinates_video.py \
 推定する場合:
 
 ```bash
-python3 foot_sparse_flow_angular_velocity.py \
+python3 foot_flow.py \
   --video /path/to/IMG_2017.mov \
   --side left \
   --bb-frame 0
@@ -126,10 +147,10 @@ python3 foot_sparse_flow_angular_velocity.py \
 `deg/frame`、`deg/s`、`rpm` としてCSVへ出力します。
 注釈動画では追跡点が角速度に応じて緑から赤へ変化します。
 
-`openpose_flow_video.py` の MediaPipe Tasks CPU 初期化だけ確認したい場合:
+`toe_flow.py` の MediaPipe Tasks CPU 初期化だけ確認したい場合:
 
 ```bash
-python3 openpose_flow_video.py --check
+python3 toe_flow.py --check
 ```
 
 補足:

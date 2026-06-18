@@ -19,7 +19,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import vision
-from mediapipe_tasks_delegate import create_pose_landmarker
+from mediapipe_helper import create_pose_landmarker
 
 TOE_LANDMARKS = {
     "left": 31,

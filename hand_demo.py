@@ -5,10 +5,10 @@ The script downloads the hand landmark model on first run and runs the
 MediaPipe Tasks CPU delegate.
 
 Use:
-  python3 mediapipe_gpu_test.py
+  python3 hand_demo.py
 
 Quick verification only:
-  python3 mediapipe_gpu_test.py --check
+  python3 hand_demo.py --check
 
 Quit the camera window with `q`.
 """
@@ -21,7 +21,7 @@ import time
 
 import cv2
 import mediapipe as mp
-from mediapipe_tasks_delegate import create_hand_landmarker, ensure_hand_model_file
+from mediapipe_helper import create_hand_landmarker, ensure_hand_model_file
 
 
 HAND_CONNECTIONS = [
