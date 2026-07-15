@@ -206,7 +206,7 @@ def point_angular_velocities(
     center_array = np.asarray(center, dtype=np.float64)
     previous_vectors = previous_points.astype(np.float64) - center_array
     vectors = points.astype(np.float64) - center_array
-    # Convert image coordinates to Cartesian coordinates.
+    # BB-centered coordinates: +x right, +y upward.
     previous_vectors[:, 1] *= -1
     vectors[:, 1] *= -1
     radii = np.minimum(

@@ -20,6 +20,8 @@
 | `trajectory_angle.py` | `frame`, `x`, `y` 系の座標 CSV から、軌跡の進行方向角と角速度を計算して新しい CSV を作成します。`--fps` を指定すると秒単位の角速度も出力します。 |
 | `overlay_video.py` | フィルター後座標 CSV を元動画へ重ね、BB 中心まわりの角速度に応じて軌跡の色を変えた MP4 を書き出します。元動画・CSV・BB 中心は GUI または引数で指定できます。 |
 | `foot_flow.py` | 足首・踵・つま先から作った足部 ROI 内の複数特徴点を疎なオプティカルフローで追跡し、BB 中心まわりの角速度中央値を `deg/frame`, `deg/s`, `rpm` として出力します。 |
+| `marker.py` | 足元に付けた蛍光色マーカを OpenCV の HSV 色抽出で検出し、マーカ中心の `x`, `y` ピクセル座標を CSV に出力します。 |
+| `pedal_velocity.py` | BB 座標とペダル座標の CSV から、ペダルの角度、角速度、rpm、BB 基準の相対速度、接線速度を計算します。 |
 
 共通モジュール:
 
@@ -115,7 +117,8 @@ python3 overlay_video.py \
 `--show-raw` 指定時のフィルター前座標も
 赤い十字で表示されます。
 角速度は `--bb-x` と `--bb-y` で指定した自転車のBB中心からつま先へ向かう
-ベクトルの角度変化として計算します。BB中心は白い斜め十字で表示されます。
+BB中心座標系のベクトルの角度変化として計算します。x は右方向、y は上方向を正にするため、
+MediaPipe/OpenCV の画像 y 座標とは符号を反転します。BB中心は白い斜め十字で表示されます。
 `--bb-frame 0` のようにフレーム番号を指定すると、そのフレームを表示して
 クリックした位置をBB中心にできます。クリック後にEnterキーで確定します。
 
@@ -136,6 +139,65 @@ python3 foot_flow.py \
 静止背景に近い点やBB周り角速度がほぼゼロの機材点も除外して、残った点の角速度中央値を
 `deg/frame`、`deg/s`、`rpm` としてCSVへ出力します。
 注釈動画では追跡点が角速度に応じて緑から赤へ変化します。
+
+蛍光色マーカの座標を OpenCV の色抽出で取得する場合:
+
+```bash
+python3 marker.py --video /path/to/IMG_2017.mov --bb-frame 1000
+python3 marker.py --video /path/to/IMG_2017.mov --bb-x 1075 --bb-y 919 --show-mask
+```
+
+出力先は既定で `results/<動画名>_marker.csv` と、検出位置を重ねた
+`results/<動画名>_marker.mp4` です。動画が不要な場合は `--no-write-video` を指定します。
+既定では BB 部分の赤
+マーカと、シューズ部分の黄色マーカを同時に検出し、`bb_x`, `bb_y`, `shoe_x`,
+`shoe_y` に画像左上を原点にしたマーカ中心のピクセル座標を出力します。
+`--bb-frame` には赤マーカが見えるフレームを指定し、表示された画像上でBB中心を
+クリックしてEnterキーで確定します。座標が分かっている場合は `--bb-x` と `--bb-y` を
+指定できます。BBは選択位置の近傍だけを探索し、他の赤い物体への誤移動を防ぎます。
+赤マーカがクランクや足で隠れたフレームでは直前の信頼できるBB座標を使用し、CSVの
+`bb_detected=0`, `bb_estimated=1` で直接検出値と区別します。BB指定を省略した場合は
+先頭フレームでクリック選択画面が開きます。
+蛍光色がプリセットに合わない場合は、1色検出モードで OpenCV の HSV 範囲を調整できます。
+
+```bash
+python3 marker.py --video /path/to/IMG_2017.mov --color yellow --lower-hsv 20,40,50 --upper-hsv 60,255,255
+```
+
+BB 座標とペダル座標から回転速度・移動速度を計算する場合:
+
+```bash
+python3 pedal_velocity.py
+python3 pedal_velocity.py results/IMG_2017_marker.csv --fps 30
+```
+
+CSV パスを省略すると `tkinter` のファイル選択ダイアログを使います。引数なしで
+起動した場合は、CSV 選択後に角速度色付きマーカを重ねる元動画と出力 MP4 も GUI で
+選択できます。元動画の選択をキャンセルすると CSV 出力だけを行います。
+
+足元マーカ位置を動画上に常時表示し、角速度が速い箇所を色で確認したい場合は、
+引数で元動画を渡すこともできます。
+
+```bash
+python3 pedal_velocity.py results/IMG_2017_marker.csv --fps 30 \
+  --video /path/to/IMG_2017.mov
+```
+
+出力動画は既定で `/path/to/IMG_2017_pedal_velocity_marker.mp4` です。ペダル側の
+座標位置に常時ポイントを表示し、`|omega|` が小さい箇所は緑、速い箇所は赤へ
+変化します。赤になる閾値は未指定なら1回転ごとの角速度ピークから自動調整されるため、
+スローモーション動画でも周期ごとの速い箇所を比較しやすくなります。固定したい場合は
+`--angular-speed-threshold` で指定できます。
+
+`marker.py` の既定出力では `bb_x`, `bb_y` を BB、`shoe_x`, `shoe_y` をペダル側の
+座標として読みます。別の列名を使う場合は `--bb-prefix` と `--pedal-prefix`、
+または `--bb-x-column` などで指定できます。出力には、BB とペダルそれぞれの
+画像上の速度、BB 基準の相対速度、BB を原点にした `bb_centered_x`, `bb_centered_y`、
+BB からペダルへ向かうクランク角と角速度
+`omega_*`、ケイデンス相当の `rpm`、半径方向速度と接線速度が入ります。
+`bb_centered_x = pedal_x - bb_x`, `bb_centered_y = pedal_y - bb_y` で、MediaPipe/OpenCV の
+画像座標のまま x は右方向、y は下方向を正にします。`angle_deg` は
+`atan2(bb_centered_y, bb_centered_x)` を 0..360 度に正規化したクランク角です。
 
 `toe_flow.py` の MediaPipe Tasks CPU 初期化だけ確認したい場合:
 

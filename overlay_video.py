@@ -24,6 +24,10 @@ UNKNOWN_COLOR = (255, 255, 0)
 def filtered_suffixes(csv_path: Path) -> list[str]:
     with csv_path.open(newline="", encoding="utf-8") as f:
         fieldnames = csv.DictReader(f).fieldnames or []
+    return coordinate_suffixes(fieldnames)
+
+
+def coordinate_suffixes(fieldnames: list[str]) -> list[str]:
     return [
         field.removeprefix("x_")
         for field in fieldnames
@@ -182,25 +186,29 @@ def parse_point(row: dict[str, str], x_column: str, y_column: str) -> Point:
 def select_filtered_columns(fieldnames: list[str], suffix: str | None) -> tuple[str, str, str]:
     if suffix:
         normalized = suffix.removeprefix("_")
-        x_column = f"x_{normalized}"
-        y_column = f"y_{normalized}"
-        label = normalized
+        if normalized == "raw":
+            x_column, y_column, label = "x", "y", "raw"
+        else:
+            x_column = f"x_{normalized}"
+            y_column = f"y_{normalized}"
+            label = normalized
     elif "x_savgol" in fieldnames and "y_savgol" in fieldnames:
         x_column, y_column, label = "x_savgol", "y_savgol", "savgol"
     else:
-        candidates = [
-            field.removeprefix("x_")
-            for field in fieldnames
-            if field.startswith("x_") and f"y_{field.removeprefix('x_')}" in fieldnames
-        ]
-        if len(candidates) != 1:
+        candidates = coordinate_suffixes(fieldnames)
+        if len(candidates) > 1:
             available = ", ".join(candidates) or "none"
             raise SystemExit(
-                "filtered coordinate columns are ambiguous; "
-                f"use --suffix. available suffixes: {available}"
+                "multiple filtered coordinate columns found; "
+                f"use --suffix with one of: {available}"
             )
-        label = candidates[0]
-        x_column, y_column = f"x_{label}", f"y_{label}"
+        if len(candidates) == 1:
+            label = candidates[0]
+            x_column, y_column = f"x_{label}", f"y_{label}"
+        elif "x" in fieldnames and "y" in fieldnames:
+            x_column, y_column, label = "x", "y", "raw"
+        else:
+            raise SystemExit("CSV must contain x/y or x_<suffix>/y_<suffix> coordinate columns")
 
     if x_column not in fieldnames or y_column not in fieldnames:
         raise SystemExit(f"CSV does not contain {x_column}/{y_column}")
@@ -210,7 +218,7 @@ def select_filtered_columns(fieldnames: list[str], suffix: str | None) -> tuple[
 def load_coordinates(
     csv_path: Path,
     suffix: str | None,
-) -> tuple[dict[int, Point], dict[int, Point], str]:
+) -> tuple[dict[int, Point], dict[int, Point], str, str, str]:
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames or []
@@ -225,7 +233,7 @@ def load_coordinates(
             filtered[frame_index] = parse_point(row, filtered_x, filtered_y)
             if has_raw:
                 raw[frame_index] = parse_point(row, "x", "y")
-    return filtered, raw, label
+    return filtered, raw, label, filtered_x, filtered_y
 
 
 def calculate_angular_speeds(
@@ -243,10 +251,9 @@ def calculate_angular_speeds(
             return
         frames = np.asarray(run_frames, dtype=np.float64)
         coordinates = np.asarray(run_points, dtype=np.float64)
-        relative_x = coordinates[:, 0] - center[0]
-        # Image y increases downward. Negate relative y so angles use Cartesian coordinates.
-        relative_y = center[1] - coordinates[:, 1]
-        angle = np.unwrap(np.arctan2(relative_y, relative_x))
+        bb_centered_x = coordinates[:, 0] - center[0]
+        bb_centered_y = center[1] - coordinates[:, 1]
+        angle = np.unwrap(np.mod(np.arctan2(bb_centered_y, bb_centered_x), 2.0 * np.pi))
         omega_deg_per_second = np.abs(np.degrees(np.gradient(angle, frames))) * fps
         angular_speeds.update(zip(run_frames, omega_deg_per_second.tolist()))
 
@@ -338,7 +345,7 @@ def draw_trail(
 
 
 def render_video(args: argparse.Namespace) -> None:
-    filtered, raw, label = load_coordinates(args.csv, args.suffix)
+    filtered, raw, label, filtered_x, filtered_y = load_coordinates(args.csv, args.suffix)
     cap = cv2.VideoCapture(str(args.video))
     if not cap.isOpened():
         raise SystemExit(f"cannot open video: {args.video}")
@@ -356,7 +363,7 @@ def render_video(args: argparse.Namespace) -> None:
 
     print(f"video: {args.video}")
     print(f"csv: {args.csv}")
-    print(f"filtered columns: x_{label}, y_{label}")
+    print(f"coordinate columns: {filtered_x}, {filtered_y}")
     print(f"BB center: ({args.bb_x:g}, {args.bb_y:g})")
     print(f"fully red angular speed: >= {args.angular_speed_threshold:g} deg/s")
     print(f"output: {args.output}")
