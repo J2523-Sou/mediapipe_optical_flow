@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Calculate trajectory-heading angular velocity from x/y coordinate CSV data."""
+"""座標 CSV から移動方向（軌跡の heading）の角速度を計算する。
+
+画像座標の y 軸は下向きなので、計算時だけ y を反転して数学座標系に直す。
+その後、移動方向の unwrap と Savitzky-Golay 微分を行い、ノイズを抑えた
+角速度を CSV に書き出す。
+"""
 
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ from scipy.signal import savgol_filter
 
 
 def coordinate_pairs(fieldnames: list[str]) -> list[tuple[str, str, str]]:
-    """Return (label, x column, y column) pairs found in the CSV header."""
+    """CSV ヘッダーから対応する x/y 列を探し、(ラベル, x列, y列) を返す。"""
     fields = set(fieldnames)
     pairs = []
     for x_column in fieldnames:
@@ -36,7 +41,11 @@ def trajectory_angular_velocity(
     savgol_window: int,
     savgol_polyorder: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return heading, raw/filter angular velocity, and speed in frame units."""
+    """heading、未平滑/平滑角速度、速度をフレーム単位で返す。
+
+    速度が極端に小さいフレームでは移動方向が不定になるため、結果を NaN
+    にして CSV 上では空欄として扱えるようにする。
+    """
     frame_steps = np.diff(frames)
     if not np.allclose(frame_steps, frame_steps[0]):
         raise ValueError("Savitzky-Golay angular velocity requires equally spaced frames")

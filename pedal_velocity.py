@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Calculate pedal velocities from BB and pedal marker coordinates."""
+"""BB とペダルのマーカー座標から速度・角速度を計算する。
+
+欠損していない連続区間ごとに Savitzky-Golay 平滑化と数値微分を行うため、
+動画の途中で検出に失敗したフレームがあっても、欠損をまたいだ不自然な速度を
+計算しない。座標は画像座標系（右が +x、下が +y）として扱う。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ TEXT_COLOR = (255, 255, 255)
 
 
 def parse_point(row: dict[str, str], x_column: str, y_column: str) -> tuple[float, float] | None:
+    """CSV の x/y 列を有限な浮動小数点座標へ変換する。"""
     x_value = row.get(x_column, "")
     y_value = row.get(y_column, "")
     if not x_value or not y_value:
@@ -48,6 +54,7 @@ def short_value(value: float) -> str:
 
 
 def valid_runs(valid: np.ndarray) -> list[slice]:
+    """有効フレームが連続する区間を slice のリストとして返す。"""
     runs = []
     start = None
     for index, is_valid in enumerate(valid):
@@ -68,6 +75,7 @@ def smooth_points(
     window_length: int,
     polyorder: int,
 ) -> np.ndarray:
+    """有効区間ごとに座標を Savitzky-Golay フィルターで平滑化する。"""
     smoothed = points.copy()
     for run in valid_runs(valid):
         run_frames = frames[run]
@@ -92,6 +100,7 @@ def smooth_points(
 
 
 def gradient_by_run(values: np.ndarray, frames: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """欠損をまたがず、各連続区間内だけ数値微分する。"""
     gradient = np.full_like(values, np.nan, dtype=np.float64)
     for run in valid_runs(valid):
         if run.stop - run.start < 2:
@@ -101,7 +110,7 @@ def gradient_by_run(values: np.ndarray, frames: np.ndarray, valid: np.ndarray) -
 
 
 def bb_centered_points(points: np.ndarray, centers: np.ndarray) -> np.ndarray:
-    """Return image-coordinate pedal positions with the BB at (0, 0)."""
+    """BB 座標を原点に移したペダル位置を返す。"""
     return points - centers
 
 
@@ -111,6 +120,7 @@ def calculate_velocities(
     pedal_points: np.ndarray,
     valid: np.ndarray,
 ) -> dict[str, np.ndarray]:
+    """BB速度、ペダル速度、相対速度、半径方向/接線方向の量をまとめて計算する。"""
     bb_velocity = gradient_by_run(bb_points, frames, valid)
     pedal_velocity = gradient_by_run(pedal_points, frames, valid)
     bb_centered = bb_centered_points(pedal_points, bb_points)

@@ -37,6 +37,7 @@ def detect_toe(
     landmark_index: int,
     pose_scale: float,
 ) -> tuple[float, float] | None:
+    """Pose 推定を行い、信頼度を満たすつま先の元画像座標を返す。"""
     # Pose は更新フレームだけ実行する。返ってくる正規化座標は、
     # 元動画の座標系に戻して返す。
     height, width = frame.shape[:2]
@@ -77,6 +78,7 @@ def track_toe(
     point: tuple[float, float],
     crop_size: int,
 ) -> tuple[float, float] | None:
+    """つま先周辺だけを対象にして、1点の光学フロー追跡を行う。"""
     # 毎フレーム全身 Pose を実行せず、小さいクロップ内でつま先点だけを追跡する。
     height, width = gray.shape[:2]
     x1, y1, x2, y2 = crop_bounds(point, width, height, crop_size)

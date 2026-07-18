@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Render filtered coordinate CSV data as an overlay on the source video."""
+"""座標 CSV を元動画へ重ねて描画し、動きの速さを色で表示する。
+
+CSV の x/y 列を自動検出し、必要に応じて BB 中心をクリックで指定する。
+座標差分から BB 周りの角速度を求め、軌跡・現在位置・速度情報を動画へ描く。
+"""
 
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ def filtered_suffixes(csv_path: Path) -> list[str]:
 
 
 def coordinate_suffixes(fieldnames: list[str]) -> list[str]:
+    """x_SUFFIX と y_SUFFIX がそろっている座標列の suffix を返す。"""
     return [
         field.removeprefix("x_")
         for field in fieldnames

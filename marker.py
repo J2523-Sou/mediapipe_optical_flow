@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Detect fluorescent markers and export an annotated video and coordinates."""
+"""HSV 色分離で蛍光マーカーを検出し、座標 CSV と注釈付き動画を出力する。
+
+色マスクから輪郭を抽出し、面積・円形度・縦横比・前フレームからの距離を
+使って候補を絞る。赤い BB と黄色い靴を同時に扱うモードにも対応している。
+"""
 
 from __future__ import annotations
 
@@ -41,6 +45,18 @@ BB_SHOE_DRAW_COLORS = {
 }
 
 
+def velocity_color(speed: float | None, max_speed: float = 20.0) -> tuple[int, int, int]:
+    """速度を緑→黄→赤へ変換する（OpenCVのBGR）。"""
+    if speed is None or not math.isfinite(speed):
+        return (255, 255, 255)
+    ratio = min(max(abs(speed) / max(max_speed, 1e-9), 0.0), 1.0)
+    if ratio < 0.5:
+        t = ratio * 2.0
+        return (0, 255, round(255 * t))
+    t = (ratio - 0.5) * 2.0
+    return (0, round(255 * (1.0 - t)), 255)
+
+
 @dataclass(frozen=True)
 class MarkerDetection:
     x: float
@@ -51,6 +67,7 @@ class MarkerDetection:
 
 
 def select_video() -> Path:
+    """GUIで入力動画を1本選択する。"""
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -72,6 +89,7 @@ def select_video() -> Path:
 
 
 def select_point_from_frame(video_path: Path, frame_index: int) -> tuple[float, float]:
+    """指定フレームを表示し、クリックしたBB中心座標を返す。"""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise SystemExit(f"BB選択用の動画を開けませんでした: {video_path}")
@@ -92,6 +110,7 @@ def select_point_from_frame(video_path: Path, frame_index: int) -> tuple[float, 
     window_name = f"Click BB center - frame {frame_index} (Enter: confirm, Esc: cancel)"
 
     def on_mouse(event: int, x: int, y: int, _flags: int, _param) -> None:
+        """クリック位置を元動画の座標として保存する。"""
         if event == cv2.EVENT_LBUTTONDOWN:
             selected[:] = [(x / scale, y / scale)]
 
@@ -132,6 +151,7 @@ def select_point_from_frame(video_path: Path, frame_index: int) -> tuple[float, 
 
 
 def parse_hsv(value: str) -> tuple[int, int, int]:
+    """H,S,V 形式の文字列を OpenCV の HSV 範囲として検証する。"""
     parts = value.split(",")
     if len(parts) != 3:
         raise argparse.ArgumentTypeError("HSV must be H,S,V, for example 35,80,80")
@@ -145,6 +165,7 @@ def parse_hsv(value: str) -> tuple[int, int, int]:
 
 
 def hsv_ranges_from_args(args: argparse.Namespace) -> list[HSVRange]:
+    """コマンドライン引数からHSV抽出範囲を作る。"""
     if args.color == "bb_shoe":
         raise SystemExit("--lower-hsv/--upper-hsv cannot be used with --color bb_shoe")
     if args.lower_hsv is None and args.upper_hsv is None:
@@ -164,6 +185,12 @@ def build_marker_mask(
     blur_kernel: int,
     morph_kernel: int,
 ) -> np.ndarray:
+    """フレームから指定色の二値マスクを作る。"""
+    """フレームを HSV に変換し、指定色に該当する二値マスクを作る。
+
+    Gaussian blur は細かな色ノイズを抑え、open/close は点状ノイズ除去と
+    マーカー領域の穴埋めを行う。
+    """
     if blur_kernel > 1:
         frame = cv2.GaussianBlur(frame, (blur_kernel, blur_kernel), 0)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -181,6 +208,7 @@ def build_marker_mask(
 
 
 def contour_center(contour: np.ndarray) -> tuple[float, float]:
+    """輪郭の重心または外接円中心を返す。"""
     moments = cv2.moments(contour)
     if moments["m00"]:
         return float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"])
@@ -189,6 +217,7 @@ def contour_center(contour: np.ndarray) -> tuple[float, float]:
 
 
 def contour_circularity(contour: np.ndarray, area: float) -> float:
+    """輪郭の円形度を 0〜1 付近で計算する（円に近いほど 1）。"""
     perimeter = cv2.arcLength(contour, True)
     if perimeter <= 0:
         return 0.0
@@ -196,6 +225,7 @@ def contour_circularity(contour: np.ndarray, area: float) -> float:
 
 
 def contour_aspect_score(contour: np.ndarray) -> float:
+    """輪郭の外接矩形が正方形に近いほど高い値を返す。"""
     _, _, width, height = cv2.boundingRect(contour)
     longest = max(width, height)
     if longest <= 0:
@@ -215,6 +245,7 @@ def detect_marker(
     min_circularity: float = 0.0,
     min_aspect: float = 0.0,
 ) -> MarkerDetection | None:
+    """マスク内の条件に合う輪郭を1つ検出する。"""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates = []
     for contour in contours:
@@ -258,6 +289,7 @@ def offset_detection(
     x_offset: int,
     y_offset: int,
 ) -> MarkerDetection | None:
+    """検出結果の座標と矩形をROI分だけ移動する。"""
     if detection is None:
         return None
     x, y, width, height = detection.bbox
@@ -275,6 +307,7 @@ def detect_bb_near_anchor(
     anchor: tuple[float, float],
     args: argparse.Namespace,
 ) -> tuple[MarkerDetection | None, np.ndarray]:
+    """BB中心付近だけを探索して赤マーカーを検出する。"""
     height, width = frame.shape[:2]
     radius = math.ceil(args.bb_search_radius)
     x0 = max(math.floor(anchor[0]) - radius, 0)
@@ -310,6 +343,7 @@ def draw_status_line(
     y: int,
     color: tuple[int, int, int] = (255, 255, 255),
 ) -> None:
+    """動画上に黒縁付きの状態テキストを描く。"""
     origin = (12, y)
     cv2.putText(
         frame,
@@ -342,6 +376,7 @@ def draw_detection_label(
     *,
     prefer_below: bool = False,
 ) -> None:
+    """検出マーカーの近くに説明ラベルを描く。"""
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.55
     text_size, baseline = cv2.getTextSize(text, font, font_scale, 1)
@@ -366,7 +401,10 @@ def draw_overlay(
     mask: np.ndarray | None,
     frame_index: int,
     show_mask: bool,
+    speed: float | None = None,
+    speed_color_max: float = 20.0,
 ) -> np.ndarray:
+    """単一マーカーの検出結果をフレームへ重ねる。"""
     output = frame.copy()
     if show_mask and mask is not None:
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -376,7 +414,7 @@ def draw_overlay(
         x, y, w, h = detection.bbox
         center = round(detection.x), round(detection.y)
         radius = max(round(detection.radius), 3)
-        color = (0, 255, 0)
+        color = velocity_color(speed, speed_color_max)
         cv2.rectangle(output, (x, y), (x + w, y + h), (0, 255, 255), 2, cv2.LINE_AA)
         cv2.circle(output, center, radius, color, 2, cv2.LINE_AA)
         cv2.drawMarker(
@@ -390,7 +428,8 @@ def draw_overlay(
         )
         draw_detection_label(
             output,
-            f"marker ({detection.x:.1f}, {detection.y:.1f})",
+            f"marker ({detection.x:.1f}, {detection.y:.1f})"
+            + (f" speed={speed:.1f}" if speed is not None else ""),
             center,
             radius,
             color,
@@ -409,7 +448,10 @@ def draw_multi_overlay(
     frame_index: int,
     show_mask: bool,
     estimated_targets: set[str] | None = None,
+    shoe_speed: float | None = None,
+    speed_color_max: float = 20.0,
 ) -> np.ndarray:
+    """BBと靴マーカーの検出結果を速度色付きで重ねる。"""
     output = frame.copy()
     estimated_targets = estimated_targets or set()
     if show_mask:
@@ -423,6 +465,8 @@ def draw_multi_overlay(
         label = BB_SHOE_LABELS[target]
         estimated = target in estimated_targets
         color = (255, 255, 255) if estimated else BB_SHOE_DRAW_COLORS[target]
+        if target == "shoe":
+            color = velocity_color(shoe_speed, speed_color_max)
         if detection is None:
             continue
 
@@ -442,7 +486,8 @@ def draw_multi_overlay(
         )
         draw_detection_label(
             output,
-            f"{label}{' estimated' if estimated else ''} ({detection.x:.1f}, {detection.y:.1f})",
+            f"{label}{' estimated' if estimated else ''} ({detection.x:.1f}, {detection.y:.1f})"
+            + (f" speed={shoe_speed:.1f}" if target == "shoe" and shoe_speed is not None else ""),
             center,
             radius,
             color,
@@ -454,6 +499,7 @@ def draw_multi_overlay(
 
 
 def default_output_paths(args: argparse.Namespace) -> tuple[Path, Path | None]:
+    """入力名からCSVと動画の既定出力先を決める。"""
     if args.video is not None:
         stem = args.video.stem
     else:
@@ -466,6 +512,7 @@ def default_output_paths(args: argparse.Namespace) -> tuple[Path, Path | None]:
 
 
 def estimated_marker(point: tuple[float, float], target_area: float) -> MarkerDetection:
+    """最後に分かった位置から推定マーカー情報を作る。"""
     radius = max(math.sqrt(target_area / math.pi), 3.0)
     x0 = round(point[0] - radius)
     y0 = round(point[1] - radius)
@@ -480,6 +527,7 @@ def estimated_marker(point: tuple[float, float], target_area: float) -> MarkerDe
 
 
 def process(args: argparse.Namespace) -> None:
+    """動画を走査して検出結果CSVと注釈動画を書き出す。"""
     source: int | str
     if args.video is not None:
         source = str(args.video)
@@ -538,6 +586,7 @@ def process(args: argparse.Namespace) -> None:
     try:
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
+            previous_shoe_point: tuple[float, float] | None = None
             if args.color == "bb_shoe":
                 writer.writerow([
                     "frame",
@@ -560,6 +609,7 @@ def process(args: argparse.Namespace) -> None:
                     "shoe_bbox_w",
                     "shoe_bbox_h",
                     "shoe_detected",
+                    "shoe_speed_px_per_frame",
                 ])
             else:
                 writer.writerow([
@@ -573,6 +623,7 @@ def process(args: argparse.Namespace) -> None:
                     "bbox_w",
                     "bbox_h",
                     "detected",
+                    "speed_px_per_frame",
                 ])
             while True:
                 ok, frame = cap.read()
@@ -626,6 +677,14 @@ def process(args: argparse.Namespace) -> None:
                         estimated_targets.add("bb")
                         bb_estimated_count += 1
                     output_detections = {"bb": output_bb, "shoe": shoe_detection}
+                    shoe_speed = None
+                    if shoe_detection is not None and previous_shoe_point is not None:
+                        shoe_speed = math.hypot(
+                            shoe_detection.x - previous_shoe_point[0],
+                            shoe_detection.y - previous_shoe_point[1],
+                        )
+                    if shoe_detection is not None:
+                        previous_shoe_point = (shoe_detection.x, shoe_detection.y)
 
                     row = [frame_index]
                     if output_bb is None:
@@ -664,6 +723,7 @@ def process(args: argparse.Namespace) -> None:
                             *shoe_detection.bbox,
                             1,
                         ])
+                    row.append("" if shoe_speed is None else f"{shoe_speed:.6f}")
                     writer.writerow(row)
 
                     if video_writer is not None or args.preview:
@@ -674,6 +734,8 @@ def process(args: argparse.Namespace) -> None:
                             frame_index,
                             args.show_mask,
                             estimated_targets,
+                            shoe_speed,
+                            args.speed_color_max,
                         )
                         if video_writer is not None:
                             video_writer.write(overlay)
@@ -685,8 +747,13 @@ def process(args: argparse.Namespace) -> None:
                     assert hsv_ranges is not None
                     mask = build_marker_mask(frame, hsv_ranges, args.blur_kernel, args.morph_kernel)
                     detection = detect_marker(mask, args.min_area, args.max_area)
+                    speed = None
+                    if detection is not None and previous_shoe_point is not None:
+                        speed = math.hypot(detection.x - previous_shoe_point[0], detection.y - previous_shoe_point[1])
+                    if detection is not None:
+                        previous_shoe_point = (detection.x, detection.y)
                     if detection is None:
-                        writer.writerow([frame_index, "", "", "", "", "", "", "", "", 0])
+                        writer.writerow([frame_index, "", "", "", "", "", "", "", "", 0, ""])
                     else:
                         detection_counts[args.color] += 1
                         writer.writerow([
@@ -697,10 +764,14 @@ def process(args: argparse.Namespace) -> None:
                             f"{detection.radius:.6f}",
                             *detection.bbox,
                             1,
+                            "" if speed is None else f"{speed:.6f}",
                         ])
 
                     if video_writer is not None or args.preview:
-                        overlay = draw_overlay(frame, detection, mask, frame_index, args.show_mask)
+                        overlay = draw_overlay(
+                            frame, detection, mask, frame_index, args.show_mask,
+                            speed, args.speed_color_max,
+                        )
                         if video_writer is not None:
                             video_writer.write(overlay)
                         if args.preview:
@@ -732,6 +803,7 @@ def process(args: argparse.Namespace) -> None:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    """コマンドライン引数を解析して検証する。"""
     parser = argparse.ArgumentParser(description="Detect fluorescent marker coordinates with OpenCV HSV thresholding")
     parser.add_argument("--video", type=Path, help="input video path; GUI selection opens when omitted")
     parser.add_argument("--camera", type=int, help="camera index. Specify this instead of --video for live capture")
@@ -800,6 +872,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-video", type=Path, help="annotated MP4 path")
     parser.add_argument("--preview", action="store_true", help="show OpenCV preview window; press q to stop")
     parser.add_argument("--show-mask", action="store_true", help="blend the HSV mask into preview/output video")
+    parser.add_argument("--speed-color-max", type=float, default=20.0, help="speed at which marker becomes red (px/frame)")
     parser.add_argument("--progress-every", type=int, default=100, help="print progress every N frames")
     args = parser.parse_args(argv)
 
@@ -831,6 +904,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for name in ("min_area", "progress_every"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be > 0")
+    if args.speed_color_max <= 0 or not math.isfinite(args.speed_color_max):
+        parser.error("--speed-color-max must be finite and > 0")
     if args.max_area is not None and args.max_area <= args.min_area:
         parser.error("--max-area must be greater than --min-area")
     if args.bb_max_area <= args.min_area:
@@ -867,6 +942,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str]) -> int:
+    """引数解析と動画処理を実行する。"""
     process(parse_args(argv))
     return 0
 

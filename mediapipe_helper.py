@@ -1,4 +1,8 @@
-"""CPU-only MediaPipe Tasks helpers."""
+"""MediaPipe Pose Landmarker を CPU で初期化する共通ヘルパー。
+
+各解析スクリプトが個別にモデルをダウンロード・初期化しないように、
+モデルの保存場所、CPU delegate、VIDEO モードのオプションをここへ集約する。
+"""
 
 from __future__ import annotations
 
@@ -19,16 +23,19 @@ POSE_MODEL_PATH = MODEL_CACHE_DIR / "pose_landmarker_full.task"
 
 
 def is_apple_silicon() -> bool:
+    """実行環境が Apple Silicon の macOS かどうかを返す。"""
     return platform.system() == "Darwin" and platform.machine() in {"arm64", "aarch64"}
 
 
 def cpu_delegate_name() -> str:
+    """ログ表示用の CPU delegate 名を返す。"""
     if is_apple_silicon():
         return "CPU (Apple Silicon)"
     return "CPU"
 
 
 def ensure_model_file(url: str, path: Path) -> Path:
+    """モデルをキャッシュへ一度だけ取得し、ローカルパスを返す。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         print(f"downloading model: {url}")
@@ -55,6 +62,11 @@ def make_pose_options(
     min_pose_presence_confidence: float = 0.5,
     min_tracking_confidence: float = 0.5,
 ) -> vision.PoseLandmarkerOptions:
+    """Pose Landmarker 用の共通設定を作成する。
+
+    running_mode=VIDEO はフレームの時系列を MediaPipe に伝え、
+    frame timestamp が単調増加する限り内部追跡も利用できる設定である。
+    """
     return vision.PoseLandmarkerOptions(
         base_options=cpu_base_options(ensure_pose_model_file()),
         running_mode=vision.RunningMode.VIDEO,

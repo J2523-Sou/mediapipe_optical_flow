@@ -1,4 +1,4 @@
-"""Small OpenCV video helpers shared by the processing scripts."""
+"""複数の解析スクリプトで共有する OpenCV 動画入出力ヘルパー。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,10 @@ import cv2
 
 
 def make_video_writer(cap: cv2.VideoCapture, output_path: Path) -> cv2.VideoWriter:
+    """入力動画と同じサイズ・FPSの MP4 writer を作成する。
+
+    動画によって FPS メタデータが取得できない場合は、保守的に 30 FPS を使う。
+    """
     fps = cap.get(cv2.CAP_PROP_FPS)
     if not fps or fps <= 0:
         fps = 30.0
@@ -25,6 +29,7 @@ def make_video_writer(cap: cv2.VideoCapture, output_path: Path) -> cv2.VideoWrit
 
 
 def video_timestamp_ms(cap: cv2.VideoCapture, frame_idx: int) -> int:
+    """フレーム番号を MediaPipe Tasks が要求するミリ秒 timestamp に変換する。"""
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps and fps > 0:
         return int((frame_idx / fps) * 1000)

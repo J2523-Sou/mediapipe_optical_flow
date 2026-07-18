@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Estimate BB-centered angular velocity from sparse optical flow on the foot."""
+"""足部の疎な光学フローから、BB 中心まわりの角速度を推定する。
+
+MediaPipe の足部ランドマークで ROI を決め、ROI 内の特徴点を Lucas-Kanade
+法で追跡する。前後方向の追跡誤差で外れ値を除き、BB 中心から見た点の回転量を
+集約することで、足全体の回転運動を推定する。
+"""
 
 from __future__ import annotations
 
@@ -60,6 +65,11 @@ def detect_foot_landmarks(
     pose_scale: float,
     person_mask_threshold: float,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """足首・踵・足先の3点と、必要なら人物セグメンテーション mask を返す。
+
+    Pose 推定を縮小画像で行った場合も、ランドマークは元画像のピクセル座標へ
+    戻す。visibility が低いフレームは追跡 ROI を誤るため検出なしとする。
+    """
     height, width = frame.shape[:2]
     if pose_scale != 1.0:
         pose_frame = cv2.resize(
@@ -112,6 +122,7 @@ def make_foot_mask(
     landmarks: np.ndarray,
     padding: int,
 ) -> np.ndarray:
+    """3つの足部ランドマークを結んだ、特徴点検出用の厚み付き ROI を作る。"""
     mask = np.zeros(shape, dtype=np.uint8)
     points = np.round(landmarks).astype(np.int32)
     ankle, heel, toe = points
@@ -148,6 +159,7 @@ def track_features(
     previous_points: np.ndarray,
     max_forward_backward_error: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """特徴点を順方向・逆方向へ追跡し、前後整合性のある点だけ返す。"""
     next_points, forward_status, forward_error = cv2.calcOpticalFlowPyrLK(
         previous_gray,
         gray,

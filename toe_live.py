@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Realtime toe tracker using sparse MediaPipe pose detection plus ROI tracking.
+"""リアルタイムにつま先を追跡するプログラム。
 
-MediaPipe Pose still estimates the full pose when it runs. To reduce realtime
-load, this script runs Pose Landmarker only every N frames or after tracking
-failure, then tracks only the selected toe landmark inside a small crop with
-OpenCV optical flow.
+MediaPipe Pose は実行時に全身を推定するが、負荷を抑えるため N フレームごと、
+または光学フローの追跡失敗時だけ実行する。それ以外のフレームでは、選択した
+つま先の周辺クロップだけを OpenCV の光学フローで追跡する。
 """
 
 from __future__ import annotations
@@ -34,6 +33,7 @@ def detect_toe(
     landmark_index: int,
     pose_scale: float,
 ) -> tuple[float, float] | None:
+    """Pose Landmarker から指定側のつま先をピクセル座標で取得する。"""
     height, width = frame.shape[:2]
     if pose_scale != 1.0:
         pose_frame = cv2.resize(frame, None, fx=pose_scale, fy=pose_scale, interpolation=cv2.INTER_AREA)
@@ -56,6 +56,7 @@ def detect_toe(
 
 
 def crop_bounds(point: tuple[float, float], width: int, height: int, crop_size: int) -> tuple[int, int, int, int]:
+    """点を中心とする追跡クロップを画像範囲内に切り詰めて返す。"""
     x, y = point
     half = crop_size // 2
     x1 = max(0, int(x) - half)
@@ -71,6 +72,7 @@ def track_toe(
     point: tuple[float, float],
     crop_size: int,
 ) -> tuple[float, float] | None:
+    """前フレームの点を Lucas-Kanade 法で現フレームへ移動させる。"""
     height, width = gray.shape[:2]
     x1, y1, x2, y2 = crop_bounds(point, width, height, crop_size)
     if x2 - x1 < 16 or y2 - y1 < 16:
