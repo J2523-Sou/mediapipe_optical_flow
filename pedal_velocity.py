@@ -26,6 +26,7 @@ UNKNOWN_COLOR = (255, 255, 0)
 TEXT_COLOR = (255, 255, 255)
 
 
+# CSV行から指定されたx/y座標を読み取り、使用可能な点として返す。
 def parse_point(row: dict[str, str], x_column: str, y_column: str) -> tuple[float, float] | None:
     """CSV の x/y 列を有限な浮動小数点座標へ変換する。"""
     x_value = row.get(x_column, "")
@@ -39,10 +40,12 @@ def parse_point(row: dict[str, str], x_column: str, y_column: str) -> tuple[floa
     return x, y
 
 
+# 数値をCSV出力用の文字列に整形する。
 def format_value(value: float) -> str:
     return "" if not math.isfinite(value) else f"{value:.9f}"
 
 
+# 画面表示用に数値を短く整形する。
 def short_value(value: float) -> str:
     if not math.isfinite(value):
         return "n/a"
@@ -53,6 +56,7 @@ def short_value(value: float) -> str:
     return f"{value:.2f}"
 
 
+# 有効なフレームが連続している区間を抽出する。
 def valid_runs(valid: np.ndarray) -> list[slice]:
     """有効フレームが連続する区間を slice のリストとして返す。"""
     runs = []
@@ -68,6 +72,7 @@ def valid_runs(valid: np.ndarray) -> list[slice]:
     return runs
 
 
+# 欠損区間をまたがないよう、座標を連続区間ごとに平滑化する。
 def smooth_points(
     frames: np.ndarray,
     points: np.ndarray,
@@ -99,6 +104,7 @@ def smooth_points(
     return smoothed
 
 
+# 有効な連続区間内だけで数値微分を行う。
 def gradient_by_run(values: np.ndarray, frames: np.ndarray, valid: np.ndarray) -> np.ndarray:
     """欠損をまたがず、各連続区間内だけ数値微分する。"""
     gradient = np.full_like(values, np.nan, dtype=np.float64)
@@ -109,11 +115,13 @@ def gradient_by_run(values: np.ndarray, frames: np.ndarray, valid: np.ndarray) -
     return gradient
 
 
+# 各ペダル座標をBB中心基準の相対座標へ変換する。
 def bb_centered_points(points: np.ndarray, centers: np.ndarray) -> np.ndarray:
     """BB 座標を原点に移したペダル位置を返す。"""
     return points - centers
 
 
+# 座標から速度、角速度、半径方向速度、接線方向速度を計算する。
 def calculate_velocities(
     frames: np.ndarray,
     bb_points: np.ndarray,
@@ -172,6 +180,7 @@ def calculate_velocities(
     }
 
 
+# 動画フレーム上に視認性の高い影付きテキストを描画する。
 def draw_text_with_shadow(
     image,
     text: str,
@@ -204,6 +213,7 @@ def draw_text_with_shadow(
     )
 
 
+# 角速度を絶対値にし、フレーム単位または秒単位へ変換する。
 def angular_speed_values(velocities: dict[str, np.ndarray], fps: float | None) -> tuple[np.ndarray, str]:
     angular_speed = np.abs(np.degrees(velocities["omega"]))
     if fps is None:
@@ -211,6 +221,7 @@ def angular_speed_values(velocities: dict[str, np.ndarray], fps: float | None) -
     return angular_speed * fps, "deg/s"
 
 
+# 有効なフレームの連続区間をインデックス配列として抽出する。
 def valid_index_runs(valid: np.ndarray) -> list[np.ndarray]:
     runs: list[np.ndarray] = []
     start = None
@@ -225,11 +236,14 @@ def valid_index_runs(valid: np.ndarray) -> list[np.ndarray]:
     return runs
 
 
+# 角速度データから色分け用の自動しきい値を決定する。
 def auto_angular_speed_threshold(
     angles: np.ndarray,
     angular_speeds: np.ndarray,
+    start_frame: int = 0,
 ) -> tuple[float, str]:
     finite = np.isfinite(angles) & np.isfinite(angular_speeds)
+    finite[:max(start_frame, 0)] = False
     if not np.any(finite):
         return 1.0, "fallback"
 
@@ -261,8 +275,9 @@ def auto_angular_speed_threshold(
         cycle_threshold = float(np.nanpercentile(cycle_peaks, 90))
         finite_speeds = angular_speeds[np.isfinite(angular_speeds)]
         robust_threshold = float(np.nanpercentile(finite_speeds, 90))
-        threshold = min(cycle_threshold, robust_threshold)
-        source = f"auto robust p90, cycle peaks n={len(cycle_peaks)}"
+        # 低速なサイクルや不完全なサイクルで閾値が下がりすぎないようにする。
+        threshold = max(cycle_threshold, robust_threshold)
+        source = f"auto robust p90/max cycle peaks, n={len(cycle_peaks)}"
     else:
         finite_speeds = angular_speeds[np.isfinite(angular_speeds)]
         threshold = float(np.nanpercentile(finite_speeds, 90))
@@ -274,6 +289,7 @@ def auto_angular_speed_threshold(
     return threshold, source
 
 
+# 角速度としきい値の比率に応じた表示色を返す。
 def angular_speed_color(angular_speed: float, threshold: float) -> tuple[int, int, int]:
     if not math.isfinite(angular_speed):
         return UNKNOWN_COLOR
@@ -287,6 +303,7 @@ def angular_speed_color(angular_speed: float, threshold: float) -> tuple[int, in
     )
 
 
+# 動画フレーム上のペダル位置にマーカーを描画する。
 def draw_pedal_marker(
     frame,
     point: tuple[float, float],
@@ -303,6 +320,7 @@ def draw_pedal_marker(
     cv2.circle(frame, center, radius, TEXT_COLOR, marker_thickness, cv2.LINE_AA)
 
 
+# ペダル位置の履歴を色付きの軌跡として描画する。
 def draw_trail(
     frame,
     trail: deque[tuple[tuple[float, float], tuple[int, int, int]]],
@@ -318,6 +336,7 @@ def draw_trail(
         previous = current
 
 
+# 角速度に応じた色のペダルマーカー動画を生成する。
 def render_velocity_marker_video(
     args: argparse.Namespace,
     frames: np.ndarray,
@@ -338,6 +357,7 @@ def render_velocity_marker_video(
         angular_speed_threshold, threshold_source = auto_angular_speed_threshold(
             velocities["unwrapped_angle"],
             angular_speeds,
+            args.angular_speed_threshold_start_frame,
         )
     else:
         angular_speed_threshold = args.angular_speed_threshold
@@ -387,6 +407,7 @@ def render_velocity_marker_video(
     print(f"saved marker video: {args.output_video}")
 
 
+# 出力CSVに使用する列名をFPS設定に応じて作成する。
 def output_headers(fps: float | None) -> list[str]:
     headers = [
         "frame",
@@ -426,6 +447,7 @@ def output_headers(fps: float | None) -> list[str]:
     return headers
 
 
+# 入力CSVを読み込み、速度データと必要な出力ファイルを生成する。
 def process_csv(args: argparse.Namespace) -> None:
     with args.input.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -517,10 +539,12 @@ def process_csv(args: argparse.Namespace) -> None:
         render_velocity_marker_video(args, frames, pedal_points, velocities)
 
 
+# GUIのファイル選択ダイアログで入力・出力パスを補完する。
 def select_gui_inputs(args: argparse.Namespace, select_video: bool) -> argparse.Namespace:
     try:
         import tkinter as tk
         from tkinter import filedialog
+        from tkinter import simpledialog
     except Exception as exc:  # pragma: no cover - GUI environment dependent
         raise SystemExit(f"tkinter is unavailable; specify input CSV ({exc})")
 
@@ -556,11 +580,37 @@ def select_gui_inputs(args: argparse.Namespace, select_video: bool) -> argparse.
             if not selected:
                 raise SystemExit("出力動画の保存先選択がキャンセルされました")
             args.output_video = Path(selected)
+
+        # 角速度の色分け閾値を数値で指定できる。キャンセル時は自動調整を使う。
+        if args.video is not None and args.angular_speed_threshold is None:
+            angular_speed_unit = "deg/s" if args.fps is not None else "deg/frame"
+            args.angular_speed_threshold = simpledialog.askfloat(
+                "角速度の赤色しきい値",
+                f"完全に赤くする角速度を入力（{angular_speed_unit}、キャンセルで自動調整）:",
+                minvalue=0.0,
+                parent=root,
+            )
+
+        if (
+            args.video is not None
+            and args.angular_speed_threshold is None
+            and args.angular_speed_threshold_start_frame == 0
+        ):
+            args.angular_speed_threshold_start_frame = simpledialog.askinteger(
+                "角速度の計算開始フレーム",
+                "自動調整に使い始めるフレームを選択（0で最初から）:",
+                initialvalue=0,
+                minvalue=0,
+                parent=root,
+            )
+            if args.angular_speed_threshold_start_frame is None:
+                args.angular_speed_threshold_start_frame = 0
     finally:
         root.destroy()
     return args
 
 
+# コマンドライン引数を解析し、各種設定値を検証する。
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Calculate pedal velocity from BB and pedal coordinate CSV")
     parser.add_argument(
@@ -600,6 +650,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         help="absolute angular speed that becomes fully red; omitted means auto-scale from per-cycle peaks",
     )
+    parser.add_argument(
+        "--angular-speed-threshold-start-frame",
+        type=int,
+        default=0,
+        help="first frame included in automatic angular-speed threshold calculation",
+    )
     parser.add_argument("--marker-size", type=int, default=18, help="pedal marker point diameter in pixels")
     parser.add_argument("--marker-thickness", type=int, default=2, help="pedal marker outline/trail thickness")
     parser.add_argument("--trail-length", type=int, default=30, help="colored pedal marker trail length in frames")
@@ -633,6 +689,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--savgol-polyorder must be less than --savgol-window")
     if args.angular_speed_threshold is not None and args.angular_speed_threshold < 0:
         parser.error("--angular-speed-threshold must be >= 0")
+    if args.angular_speed_threshold_start_frame < 0:
+        parser.error("--angular-speed-threshold-start-frame must be >= 0")
     for name in ("marker_size", "marker_thickness", "trail_length"):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
@@ -641,6 +699,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
+# コマンドライン実行時の処理全体を開始する。
 def main(argv: list[str]) -> int:
     process_csv(parse_args(argv))
     return 0
